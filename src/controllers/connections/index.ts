@@ -113,21 +113,30 @@ const connectionsController = new Elysia({
       const { phoneNumber } = params;
       const { jid, messageContent } = body;
 
-      const response = await baileys.sendMessage(phoneNumber, {
-        jid,
-        messageContent: buildMessageContent(messageContent),
-      });
+      try {
+        const response = await baileys.sendMessage(phoneNumber, {
+          jid,
+          messageContent: buildMessageContent(messageContent),
+        });
 
-      if (!response) {
-        return new Response("Message not sent", { status: 500 });
+        if (!response) {
+          return new Response("Message not sent", { status: 500 });
+        }
+
+        return {
+          data: {
+            key: response.key,
+            messageTimestamp: response.messageTimestamp,
+          },
+        };
+      } catch (error) {
+        const errorMessage =
+          error instanceof Error ? error.message : String(error);
+        return new Response(
+          `Failed to send message: ${errorMessage}`,
+          { status: 500 },
+        );
       }
-
-      return {
-        data: {
-          key: response.key,
-          messageTimestamp: response.messageTimestamp,
-        },
-      };
     },
     {
       params: phoneNumberParams,

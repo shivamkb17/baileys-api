@@ -7,6 +7,7 @@ import makeWASocket, {
   type ChatModification,
   type ConnectionState,
   DisconnectReason,
+  isJidGroup,
   type MessageReceiptType,
   makeCacheableSignalKeyStore,
   type proto,
@@ -251,7 +252,21 @@ export class BaileysConnection {
   }
 
   async sendMessage(jid: string, messageContent: AnyMessageContent) {
-    this.safeSocket();
+    const socket = this.safeSocket();
+
+    // Validate JID format - ensure it doesn't have malformed suffixes
+    if (jid.includes("@g.us@s.whatsapp.net") || jid.includes("@s.whatsapp.net@g.us")) {
+      throw new Error(
+        `Invalid JID format: ${jid}. JID should end with either @g.us (for groups) or @s.whatsapp.net (for individual chats), not both.`,
+      );
+    }
+
+    // Check if connection is ready
+    if (!socket.user?.id) {
+      throw new Error(
+        "Connection not ready. Please wait for the connection to be fully established before sending messages.",
+      );
+    }
 
     let waveformProxy: Buffer | null = null;
     try {
@@ -279,9 +294,22 @@ export class BaileysConnection {
       );
     }
 
-    return this.safeSocket().sendMessage(jid, messageContent, {
-      waveformProxy,
-    });
+    try {
+      return await socket.sendMessage(jid, messageContent, {
+        waveformProxy,
+      });
+    } catch (error) {
+      const errorMessage = errorToString(error);
+
+      // Provide more helpful error messages
+      if (errorMessage.includes("Connection Closed") || errorMessage.includes("428")) {
+        throw new Error(
+          "Connection is closed or not ready. Please ensure the WhatsApp connection is active and try again.",
+        );
+      }
+
+      throw error;
+    }
   }
 
   sendPresenceUpdate(type: WAPresence, toJid?: string | undefined) {
@@ -439,6 +467,44 @@ export class BaileysConnection {
     });
     if (media) {
       payload.extra = { media };
+    }
+
+    // Enrich payload with group names for group messages
+    const groupNames: Record<string, string> = {};
+    const groupJids = new Set<string>();
+
+    // Collect unique group JIDs from messages
+    for (const message of data.messages) {
+      const remoteJid = message.key.remoteJid;
+      if (remoteJid && isJidGroup(remoteJid)) {
+        groupJids.add(remoteJid);
+      }
+    }
+
+    // Fetch group names using groupMetadata API
+    if (groupJids.size > 0 && this.socket) {
+      for (const groupJid of groupJids) {
+        try {
+          const metadata = await this.socket.groupMetadata(groupJid);
+          if (metadata.subject) {
+            groupNames[groupJid] = metadata.subject;
+          }
+        } catch (error) {
+          logger.debug(
+            "[%s] [handleMessagesUpsert] Failed to get group name for %s: %s",
+            this.phoneNumber,
+            groupJid,
+            errorToString(error),
+          );
+        }
+      }
+
+      if (Object.keys(groupNames).length > 0) {
+        payload.extra = {
+          ...(payload.extra || {}),
+          groupNames,
+        };
+      }
     }
 
     this.sendToWebhook(payload);
