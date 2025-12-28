@@ -183,6 +183,7 @@ export class BaileysConnection {
         this.phoneNumber,
         errorToString(error),
       );
+      this.onConnectionClose?.();
       return;
     }
 
