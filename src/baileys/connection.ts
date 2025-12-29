@@ -7,7 +7,12 @@ import makeWASocket, {
   type ChatModification,
   type ConnectionState,
   DisconnectReason,
+  isJidBot,
+  isJidBroadcast,
   isJidGroup,
+  isJidMetaAI,
+  isJidNewsletter,
+  isJidStatusBroadcast,
   type MessageReceiptType,
   makeCacheableSignalKeyStore,
   type proto,
@@ -20,7 +25,6 @@ import { downloadMediaFromMessages } from "@/baileys/helpers/downloadMediaFromMe
 import { fetchBaileysClientVersion } from "@/baileys/helpers/fetchBaileysClientVersion";
 import { normalizeBrazilPhoneNumber } from "@/baileys/helpers/normalizeBrazilPhoneNumber";
 import { preprocessAudio } from "@/baileys/helpers/preprocessAudio";
-import { shouldIgnoreJid } from "@/baileys/helpers/shouldIgnoreJid";
 import { useRedisAuthState } from "@/baileys/redisAuthState";
 import type {
   BaileysConnectionOptions,
@@ -93,6 +97,7 @@ export class BaileysConnection {
   private isReconnect: boolean;
   private includeMedia: boolean;
   private syncFullHistory: boolean;
+  private ignoreGroupMessages: boolean | undefined;
   private onConnectionClose: (() => void) | null;
   private socket: ReturnType<typeof makeWASocket> | null;
   private clearAuthState: AuthenticationState["keys"]["clear"] | null;
@@ -112,6 +117,7 @@ export class BaileysConnection {
     // TODO(v2): Change default to false.
     this.includeMedia = options.includeMedia ?? true;
     this.syncFullHistory = options.syncFullHistory ?? false;
+    this.ignoreGroupMessages = options.ignoreGroupMessages;
   }
 
   // biome-ignore lint/suspicious/noExplicitAny: Typing this wrapper is not trivial.
@@ -139,6 +145,7 @@ export class BaileysConnection {
     this.webhookVerifyToken = options.webhookVerifyToken;
     this.includeMedia = options.includeMedia ?? true;
     this.syncFullHistory = options.syncFullHistory ?? false;
+    this.ignoreGroupMessages = options.ignoreGroupMessages;
   }
 
   async connect() {
@@ -155,6 +162,49 @@ export class BaileysConnection {
     });
     this.clearAuthState = state.keys.clear;
 
+    // Create a per-connection shouldIgnoreJid function that uses connection-specific ignoreGroupMessages
+    // or falls back to global config
+    const shouldIgnoreJidForConnection = (jid: string): boolean => {
+      const {
+        ignoreGroupMessages: globalIgnoreGroupMessages,
+        ignoreStatusMessages,
+        ignoreBroadcastMessages,
+        ignoreNewsletterMessages,
+        ignoreBotMessages,
+        ignoreMetaAiMessages,
+      } = config.baileys;
+
+      // Use per-connection value if provided, otherwise use global config
+      const ignoreGroupMessages =
+        this.ignoreGroupMessages !== undefined
+          ? this.ignoreGroupMessages
+          : globalIgnoreGroupMessages;
+
+      if (isJidGroup(jid) && ignoreGroupMessages) {
+        return true;
+      }
+      if (isJidStatusBroadcast(jid) && ignoreStatusMessages) {
+        return true;
+      }
+      if (
+        isJidBroadcast(jid) &&
+        !isJidStatusBroadcast(jid) &&
+        ignoreBroadcastMessages
+      ) {
+        return true;
+      }
+      if (isJidNewsletter(jid) && ignoreNewsletterMessages) {
+        return true;
+      }
+      if (isJidBot(jid) && ignoreBotMessages) {
+        return true;
+      }
+      if (isJidMetaAI(jid) && ignoreMetaAiMessages) {
+        return true;
+      }
+      return false;
+    };
+
     const socketOptions: UserFacingSocketConfig = {
       auth: {
         creds: state.creds,
@@ -164,7 +214,7 @@ export class BaileysConnection {
       logger: baileysLogger,
       browser: Browsers.windows(this.clientName),
       syncFullHistory: this.syncFullHistory,
-      shouldIgnoreJid,
+      shouldIgnoreJid: shouldIgnoreJidForConnection,
       version: await fetchBaileysClientVersion().catch((error) => {
         logger.error(
           "[%s] [fetchBaileysVersion] Failed to fetch latest WhatsApp Web version, falling back to internal version. %s",

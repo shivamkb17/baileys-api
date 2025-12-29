@@ -10,6 +10,7 @@ export interface BaileysConnectionOptions {
   webhookVerifyToken: string;
   includeMedia?: boolean;
   syncFullHistory?: boolean;
+  ignoreGroupMessages?: boolean;
   isReconnect?: boolean;
   onConnectionClose?: () => void;
 }
